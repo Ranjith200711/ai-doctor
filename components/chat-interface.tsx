@@ -9,7 +9,7 @@ import { Send, ImageIcon, Plus, Menu, X, Sparkles, Check, Copy, MessageSquarePlu
 import { ChatMessage } from "@/components/chat-message";
 import { ConversationList } from "@/components/conversation-list";
 import { ImageUpload } from "@/components/image-upload";
-import { useChat } from "ai/react";
+import { useChat } from "@ai-sdk/react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useMobile } from "@/hooks/use-mobile";
