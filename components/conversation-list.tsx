@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 
 type Message = {
   id: string
-  role: "user" | "assistant" | "system"
+  role: "user" | "assistant" | "system" | "data" | string
   content: string
   createdAt?: Date
 }

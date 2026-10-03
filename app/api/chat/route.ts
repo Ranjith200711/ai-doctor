@@ -1,23 +1,24 @@
+import { GoogleGenerativeAI } from "@google/generative-ai"
 import { openai } from "@ai-sdk/openai"
 import { streamText } from "ai"
-
 
 // Set a longer timeout for the API route
 export const maxDuration = 30
 
-// This is the main API route for the chat functionality
+const GEMINI_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-latest",
+]
+
 export async function POST(req: Request) {
   try {
-    // Extract the messages from the request
     const { messages } = await req.json()
 
-    // In a real application, you would use the actual API key from environment variables
-    // For demonstration purposes, we're using a dummy implementation
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY
 
-    // Create a system message for the medical assistant
-    const systemMessage = {
-      role: "system",
-      content: `
+    const systemPrompt = `
 ---
 
 **AI-Based Doctor Chatbot with Medicine Suggestions**  
@@ -47,45 +48,89 @@ You are a virtual AI doctor trained to assist users in identifying possible heal
 6. Maintain a calm, reassuring, and professional tone, avoiding fear-inducing language.  
 
 ---
-
-**Example Conversation:**  
-
-**User:** Doctor, I have a sore throat and mild fever. What should I do?  
-
-**AI (Doctor Chatbot):**  
-"I understand how uncomfortable that must be. Based on your symptoms, this could be a mild viral infection, strep throat, or early signs of the flu.  
-
-- For fever and pain relief, you may take **Paracetamol 500mg** every 6-8 hours as needed.  
-- For throat discomfort, try **warm salt water gargles** and **lozenges** like Strepsils.  
-- Stay hydrated, get adequate rest, and monitor your symptoms.  
-- If the fever exceeds 102°F, or symptoms persist for more than 3 days, consult a doctor for further evaluation."  
-
----
 response should be in markdown format and better readability and professional
 if user ask other than medical field questions replay it as "i am a doctor icant answer other than medical field"
+`.trim()
 
-`.trim(),
-    }
+    if (apiKey) {
+      const genAI = new GoogleGenerativeAI(apiKey)
 
-    // Add the system message to the beginning of the messages array
-    const augmentedMessages = [systemMessage, ...messages]
+      // Sanitize messages for Gemini:
+      // Gemini expects contents to alternate between user and model, and MUST start with user.
+      let formattedContents = (messages || [])
+        .filter((m: any) => m.role === "user" || m.role === "assistant")
+        .map((m: any) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content || "" }],
+        }))
 
-    // Use the AI SDK to stream the response
-    const result = streamText({
-      model: openai("gpt-4o"),
-      messages: augmentedMessages,
-    });
+      // Remove leading model (welcome) messages if present
+      while (formattedContents.length > 0 && formattedContents[0].role !== "user") {
+        formattedContents.shift()
+      }
 
-    // Return the streaming response
-    return result.toDataStreamResponse()
-  } catch (error) {
-    console.error("Error in chat API:", error)
-    return new Response(JSON.stringify({ error: "Failed to process chat request" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
+      // If no user message left, fallback to default user query
+      if (formattedContents.length === 0) {
+        formattedContents = [{ role: "user", parts: [{ text: "Hello doctor" }] }]
+      }
+
+      let textResponse = ""
+      let lastError: any = null
+
+      for (const modelName of GEMINI_MODELS) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: modelName,
+            systemInstruction: systemPrompt,
+          })
+          const result = await model.generateContent({ contents: formattedContents })
+          textResponse = result.response.text()
+          if (textResponse) break
+        } catch (err: any) {
+          console.warn(`Gemini model ${modelName} failed:`, err.message)
+          lastError = err
+        }
+      }
+
+      if (!textResponse) {
+        throw lastError || new Error("All Gemini models failed to generate response")
+      }
+
+      // Encode output into Vercel AI SDK Data Stream protocol
+      const encoder = new TextEncoder()
+      const customStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(`0:${JSON.stringify(textResponse)}\n`))
+          controller.close()
+        },
       })
+
+      return new Response(customStream, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Vercel-AI-Data-Stream": "v1",
+        },
+      })
+    } else {
+      // OpenAI Fallback if no Gemini key is present
+      const systemMessage = { role: "system", content: systemPrompt }
+      const augmentedMessages = [systemMessage, ...messages]
+
+      const result = streamText({
+        model: openai("gpt-4o"),
+        messages: augmentedMessages,
+      })
+
+      return result.toDataStreamResponse()
     }
+  } catch (error: any) {
+    console.error("Error in chat API:", error)
+    return new Response(
+      JSON.stringify({ error: error?.message || "Failed to process chat request" }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    )
   }
-
-
-
+}
